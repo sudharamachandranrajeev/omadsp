@@ -68,12 +68,15 @@ stop_host() {
 # Stream props for every test stream: keep WirePlumber's state-stream from saving
 # (and later restoring) volumes or targets for them in ~/.local/state/wireplumber.
 NOSTATE="state.restore-props = false state.restore-target = false"
+# Test playback streams also never fall back to (or get moved onto) the default
+# device if their target disappears mid-test — the speakers stay out of it.
+NOFALLBACK="node.dont-fallback = true node.dont-reconnect = true"
 
 # play <wav> <target-node-name> [extra pw-cat args]
 play() {
   local wav="$1" target="$2"
   shift 2
-  pw-cat --playback --target "$target" -P "{ $NOSTATE }" "$@" "$wav"
+  pw-cat --playback --target "$target" -P "{ $NOSTATE $NOFALLBACK }" "$@" "$wav"
 }
 
 # rec_start <out.wav> <target-node-name>  -> pid; records the target's monitor (sinks) in f32
@@ -121,6 +124,12 @@ rec_stop() {
   kill -INT "$1" 2>/dev/null
   wait "$1" 2>/dev/null
   return 0
+}
+
+# play_bg <wav> <target> -> pid of pw-cat itself (not a subshell), so kill stops playback
+play_bg() {
+  pw-cat --playback --target "$2" -P "{ $NOSTATE $NOFALLBACK }" "$1" >/dev/null 2>&1 &
+  echo $!
 }
 
 # play_rec <wav> <play-target> <rec-target> <out.wav> : record while playing

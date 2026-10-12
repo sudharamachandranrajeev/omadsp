@@ -193,12 +193,16 @@ def cmd_clicks(a):
     pk = np.max(np.abs(r[: nwin * win].reshape(nwin, win)), axis=1)
     tone = np.sqrt(2) * np.sqrt(np.mean(z ** 2))
     worst = int(np.argmax(pk))
+    rel = db(pk) - db(tone)
+    top = [[round((s + int(0.2 * sr) + int(i) * win) / sr - s / sr, 3), round(float(rel[i]), 1)]
+           for i in np.argsort(rel)[::-1][: a.top] if rel[i] > -60]
     print(json.dumps({
         "tone_peak_db": round(float(db(tone)), 2),
         "residual_peak_db": round(float(db(pk[worst])), 2),
         "residual_median_db": round(float(db(np.median(pk))), 2),
         "worst_at_s": round(worst * win / sr, 3),
         "windows_over_-60dBc": int(np.sum(db(pk) - db(tone) > -60)),
+        **({"top_s_dBc": top} if a.top else {}),
     }))
 
 
@@ -213,5 +217,6 @@ p = sp.add_parser("latency"); p.add_argument("ref"); p.add_argument("rec")
 p = sp.add_parser("xlat"); p.add_argument("wav")
 p = sp.add_parser("gaps"); p.add_argument("wav"); p.add_argument("--min-ms", type=float, default=1.0)
 p = sp.add_parser("clicks"); p.add_argument("wav"); p.add_argument("--freq", type=float, required=True)
+p.add_argument("--top", type=int, default=0, help="list the N worst windows over -60 dBc (seconds from signal onset)")
 a = ap.parse_args()
 globals()["cmd_" + a.cmd](a)
