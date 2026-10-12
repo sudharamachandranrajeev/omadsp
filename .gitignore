@@ -1,0 +1,5 @@
+# spike artefacts
+spikes/.venv/
+*.wav
+*.sofa
+/target/
