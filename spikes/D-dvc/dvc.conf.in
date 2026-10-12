@@ -1,0 +1,43 @@
+    # Spike D: the filter sink's own volume mapped into the graph (capture.volumes -> builtin linear),
+    # in front of the LSP limiter.
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp spike DVC"
+        media.name       = "omadsp spike DVC"
+        filter.graph = {
+          nodes = [
+            { type = builtin name = volL label = linear control = { Mult = 1.0 } }
+            { type = builtin name = volR label = linear control = { Mult = 1.0 } }
+            { type = lv2 name = limiter plugin = "http://lsp-plug.in/plugins/lv2/limiter_stereo"
+              control = { "alr" = 0 "boost" = 0 "th" = 1.0 "ovs" = 0 "lk" = 5.0 } }
+          ]
+          links = [
+            { output = "volL:Out" input = "limiter:in_l" }
+            { output = "volR:Out" input = "limiter:in_r" }
+          ]
+          inputs  = [ "volL:In" "volR:In" ]
+          outputs = [ "limiter:out_l" "limiter:out_r" ]
+          capture.volumes = [
+            { control = "volL:Mult" min = 0.0 max = 1.0 }
+            { control = "volR:Mult" min = 0.0 max = 1.0 }
+          ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_spike_eq"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-spike"
+          state.restore-props = false
+          state.restore-target = false
+          filter.smart.target = { node.name = "omadsp_spike_out" }
+        }
+        playback.props = {
+          node.name    = "omadsp_spike_eq_out"
+          node.passive = true
+          state.restore-props = false
+          state.restore-target = false
+        }
+      }
+    }
