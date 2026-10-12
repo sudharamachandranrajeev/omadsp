@@ -1,0 +1,32 @@
+    # Spike A (variant): de-zippered gain = ramp (audio-rate) x signal, smart filter
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp spike gain"
+        media.name       = "omadsp spike gain"
+        filter.graph = {
+          nodes = [
+            { type = builtin name = gramp label = ramp control = { "Start" = 0.0 "Stop" = 1.0 "Duration (s)" = 0.03 } }
+            { type = builtin name = gl label = mult }
+            { type = builtin name = gr label = mult }
+          ]
+          links = [
+            { output = "gramp:Out" input = "gl:In 2" }
+            { output = "gramp:Out" input = "gr:In 2" }
+          ]
+          inputs  = [ "gl:In 1" "gr:In 1" ]
+          outputs = [ "gl:Out" "gr:Out" ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_spike_eq"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-spike"
+          state.restore-props = false
+          state.restore-target = false
+          filter.smart.target = { node.name = "omadsp_spike_out" }
+        }
+        playback.props = { node.name = "omadsp_spike_eq_out" node.passive = true state.restore-props = false state.restore-target = false }
+      }
+    }

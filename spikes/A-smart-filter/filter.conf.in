@@ -1,0 +1,74 @@
+    # Spike A: 10-band peaking EQ per channel + LSP limiter, as a WirePlumber smart filter
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp spike EQ"
+        media.name       = "omadsp spike EQ"
+        filter.graph = {
+          nodes = [
+          { type = builtin name = eqL_0 label = bq_peaking control = { "Freq" = 31.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_1 label = bq_peaking control = { "Freq" = 62.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_2 label = bq_peaking control = { "Freq" = 125.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_3 label = bq_peaking control = { "Freq" = 250.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_4 label = bq_peaking control = { "Freq" = 500.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_5 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_6 label = bq_peaking control = { "Freq" = 2000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_7 label = bq_peaking control = { "Freq" = 4000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_8 label = bq_peaking control = { "Freq" = 8000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqL_9 label = bq_peaking control = { "Freq" = 16000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_0 label = bq_peaking control = { "Freq" = 31.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_1 label = bq_peaking control = { "Freq" = 62.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_2 label = bq_peaking control = { "Freq" = 125.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_3 label = bq_peaking control = { "Freq" = 250.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_4 label = bq_peaking control = { "Freq" = 500.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_5 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_6 label = bq_peaking control = { "Freq" = 2000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_7 label = bq_peaking control = { "Freq" = 4000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_8 label = bq_peaking control = { "Freq" = 8000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = builtin name = eqR_9 label = bq_peaking control = { "Freq" = 16000.0 "Q" = 1.414 "Gain" = 0.0 } }
+          { type = lv2 name = limiter plugin = "http://lsp-plug.in/plugins/lv2/limiter_stereo"
+            control = { "alr" = 0 "boost" = 0 "th" = 1.0 "g_in" = 1.0 "g_out" = 1.0 "ovs" = @OVS@ "lk" = 5.0 } }
+          ]
+          links = [
+          { output = "eqL_0:Out" input = "eqL_1:In" }
+          { output = "eqL_1:Out" input = "eqL_2:In" }
+          { output = "eqL_2:Out" input = "eqL_3:In" }
+          { output = "eqL_3:Out" input = "eqL_4:In" }
+          { output = "eqL_4:Out" input = "eqL_5:In" }
+          { output = "eqL_5:Out" input = "eqL_6:In" }
+          { output = "eqL_6:Out" input = "eqL_7:In" }
+          { output = "eqL_7:Out" input = "eqL_8:In" }
+          { output = "eqL_8:Out" input = "eqL_9:In" }
+          { output = "eqL_9:Out" input = "limiter:in_l" }
+          { output = "eqR_0:Out" input = "eqR_1:In" }
+          { output = "eqR_1:Out" input = "eqR_2:In" }
+          { output = "eqR_2:Out" input = "eqR_3:In" }
+          { output = "eqR_3:Out" input = "eqR_4:In" }
+          { output = "eqR_4:Out" input = "eqR_5:In" }
+          { output = "eqR_5:Out" input = "eqR_6:In" }
+          { output = "eqR_6:Out" input = "eqR_7:In" }
+          { output = "eqR_7:Out" input = "eqR_8:In" }
+          { output = "eqR_8:Out" input = "eqR_9:In" }
+          { output = "eqR_9:Out" input = "limiter:in_r" }
+          ]
+          inputs  = [ "eqL_0:In" "eqR_0:In" ]
+          outputs = [ "limiter:out_l" "limiter:out_r" ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_spike_eq"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-spike"
+          state.restore-props = false
+          state.restore-target = false
+@TARGET@
+        }
+        playback.props = {
+          node.name    = "omadsp_spike_eq_out"
+          node.passive = true
+          state.restore-props = false
+          state.restore-target = false
+        }
+      }
+    }
