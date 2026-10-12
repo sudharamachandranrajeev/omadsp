@@ -10,6 +10,7 @@ usage:
   measure.py xlat     rec.wav            (lag of channel 2 behind channel 1, one recorder)
   measure.py gaps     rec.wav [--min-ms 1]
   measure.py clicks   rec.wav --freq 1000
+  measure.py peak     rec.wav [--ceil -1.0]   (sample peak of the steady part; 50 ms windows at the ceiling)
 """
 import argparse
 import json
@@ -206,6 +207,21 @@ def cmd_clicks(a):
     }))
 
 
+def cmd_peak(a):
+    x, sr = load(a.wav)
+    s, e = active(x)
+    s += int(0.3 * sr)
+    seg = np.max(np.abs(x[s:e]), axis=1)
+    win = int(0.05 * sr)
+    w = seg[: len(seg) // win * win].reshape(-1, win).max(axis=1)
+    out = {"peak_dbfs": round(float(db(seg.max())), 2), "windows": len(w)}
+    if a.ceil is not None:
+        out["windows_within_0.1dB_of_ceil"] = int(np.sum(db(w) >= a.ceil - 0.1))
+        out["within_0.5dB"] = int(np.sum(db(w) >= a.ceil - 0.5))
+        out["windows_over_ceil"] = int(np.sum(db(w) > a.ceil + 0.01))
+    print(json.dumps(out))
+
+
 ap = argparse.ArgumentParser()
 sp = ap.add_subparsers(dest="cmd", required=True)
 p = sp.add_parser("level"); p.add_argument("wav"); p.add_argument("--freq", type=float, action="append", required=True)
@@ -218,5 +234,6 @@ p = sp.add_parser("xlat"); p.add_argument("wav")
 p = sp.add_parser("gaps"); p.add_argument("wav"); p.add_argument("--min-ms", type=float, default=1.0)
 p = sp.add_parser("clicks"); p.add_argument("wav"); p.add_argument("--freq", type=float, required=True)
 p.add_argument("--top", type=int, default=0, help="list the N worst windows over -60 dBc (seconds from signal onset)")
+p = sp.add_parser("peak"); p.add_argument("wav"); p.add_argument("--ceil", type=float)
 a = ap.parse_args()
 globals()["cmd_" + a.cmd](a)

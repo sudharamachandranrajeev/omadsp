@@ -1,0 +1,43 @@
+    # Spike E: LSP para_equalizer (one bell, 1 kHz +6 dB) + LSP limiter at @TH@ (linear), smart filter
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp spike meters"
+        media.name       = "omadsp spike meters"
+        filter.graph = {
+          nodes = [
+            { type = lv2 name = peq plugin = "http://lsp-plug.in/plugins/lv2/para_equalizer_x16_lr"
+              control = {
+                "mode" = 0 "ife_l" = 0 "ofe_l" = 0 "rfe_l" = 0 "ife_r" = 0 "ofe_r" = 0 "rfe_r" = 0
+                "ftl_0" = 1 "fml_0" = 6 "fl_0" = 1000.0 "ql_0" = 1.414 "gl_0" = 2.0
+                "ftr_0" = 1 "fmr_0" = 6 "fr_0" = 1000.0 "qr_0" = 1.414 "gr_0" = 2.0
+              }
+            }
+            { type = lv2 name = limiter plugin = "http://lsp-plug.in/plugins/lv2/limiter_stereo"
+              control = { "alr" = 0 "boost" = 0 "th" = @TH@ "ovs" = 0 "lk" = 5.0 } }
+          ]
+          links = [
+            { output = "peq:out_l" input = "limiter:in_l" }
+            { output = "peq:out_r" input = "limiter:in_r" }
+          ]
+          inputs  = [ "peq:in_l" "peq:in_r" ]
+          outputs = [ "limiter:out_l" "limiter:out_r" ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_spike_eq"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-spike"
+          state.restore-props = false
+          state.restore-target = false
+          filter.smart.target = { node.name = "omadsp_spike_out" }
+        }
+        playback.props = {
+          node.name    = "omadsp_spike_eq_out"
+          node.passive = true
+          state.restore-props = false
+          state.restore-target = false
+        }
+      }
+    }
