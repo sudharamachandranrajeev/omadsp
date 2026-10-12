@@ -132,6 +132,14 @@ play_bg() {
   echo $!
 }
 
+# play_bg_relink <wav> <target> -> pid : like play_bg, but WirePlumber may move the stream (as it does
+# real apps) when a filter appears or vanishes. Keeps node.dont-fallback; only use it with a target
+# that always exists (a private sink), so the stream can't land on the default device.
+play_bg_relink() {
+  pw-cat --playback --target "$2" -P "{ $NOSTATE node.dont-fallback = true }" "$1" >/dev/null 2>&1 &
+  echo $!
+}
+
 # play_rec <wav> <play-target> <rec-target> <out.wav> : record while playing
 play_rec() {
   local r

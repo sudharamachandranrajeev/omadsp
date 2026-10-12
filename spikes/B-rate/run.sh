@@ -70,7 +70,7 @@ grep -iE "error|warn" $RUN/B.log | head -5
 echo; echo "== B3) filter.smart.disabled toggled every 0.5 s (streams relinked filter <-> sink), 1 kHz sine"
 set_params $fid '"peq:gl_0" 1.0 "peq:gr_0" 1.0 "peq:gl_1" 1.0 "peq:gr_1" 1.0 "peq:gl_2" 1.0 "peq:gr_2" 1.0'
 r=$(rec_rate $RUN/B-dis.wav omadsp_spike_out 48000); sleep 0.3
-p=$(play_bg $RUN/sine1k-8.wav omadsp_spike_out); t0=$(date +%s%N); sleep 1; sw=""
+p=$(play_bg_relink $RUN/sine1k-8.wav omadsp_spike_out); t0=$(date +%s%N); sleep 1; sw=""
 for i in $(seq 1 10); do
   sw+=" $(python3 -I -c "print(round(($(date +%s%N)-$t0)/1e9,2))")"
   if (( i % 2 )); then fmeta $fid filter.smart.disabled true; else fmeta $fid filter.smart.disabled false; fi

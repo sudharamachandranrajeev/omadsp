@@ -46,13 +46,16 @@ targetless filter catches everything that follows the default.
 
 ## B3 — `filter.smart.disabled` is not a usable bypass
 
-Toggled every 0.5 s through the `filters` metadata while playing a 1 kHz tone (chain flat): WirePlumber relinks
-every stream between the filter and the sink.
+Toggled every 0.5 s through the `filters` metadata while playing a 1 kHz tone (chain flat). WirePlumber relinks
+the stream between the filter and the sink each time (while disabled: `pw-cat → omadsp_spike_out` directly).
 
-- first disable: a **42.7 ms** silent gap;
-- every toggle: a click, **−12.4 dBc** (disable) and −26.2 dBc (enable). The paths differ by the limiter's 5 ms
-  lookahead, so the waveform jumps.
+- **every** toggle: a **37–59 ms** silent gap (10 of 10);
+- every toggle: a click, **−6 to −8 dBc**. The paths also differ by the limiter's 5 ms lookahead.
+
+(A first run had `node.dont-reconnect = true` on the test stream, so WirePlumber didn't move it and only the
+first toggle gapped. That flag is now kept off the streams in relink tests; they keep `node.dont-fallback`, and
+their target always exists.)
 
 → Bypass stays inside the chain: ramp the playback node's `volume` down, flip LSP `enabled`, ramp up (Spike A
-§3–4). `filter.smart.disabled` is only for "omadsp off" (host kept alive, nothing processed), where one click is
+§3–4). `filter.smart.disabled` is only for "omadsp off" (host kept alive, nothing processed), where one gap is
 acceptable.
