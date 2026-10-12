@@ -7,6 +7,7 @@ usage:
   signals.py sweep out.wav --db -12 --secs 6          (exponential sine sweep 20 Hz - 20 kHz)
   signals.py pink  out.wav --db -20 --secs 6
   signals.py imp   out.wav --secs 1                   (single-sample click at 0.25 s, for latency)
+  any kind: --only L|R puts the signal on one channel
 """
 import argparse
 
@@ -21,6 +22,7 @@ ap.add_argument("--db", type=float, default=-12.0)
 ap.add_argument("--secs", type=float, default=5.0)
 ap.add_argument("--rate", type=int, default=48000)
 ap.add_argument("--lead", type=float, default=0.3, help="leading silence, s")
+ap.add_argument("--only", choices=["L", "R"], help="put the signal on one channel; the other is silent")
 a = ap.parse_args()
 
 sr = a.rate
@@ -57,4 +59,6 @@ else:
 
 lead = np.zeros(int(a.lead * sr))
 x = np.concatenate([lead, x, lead]).astype(np.float32)
-sf.write(a.out, np.stack([x, x], axis=1), sr, subtype="FLOAT")
+z = np.zeros_like(x)
+l, r = {None: (x, x), "L": (x, z), "R": (z, x)}[a.only]
+sf.write(a.out, np.stack([l, r], axis=1), sr, subtype="FLOAT")

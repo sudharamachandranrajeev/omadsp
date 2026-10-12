@@ -210,6 +210,9 @@ def cmd_clicks(a):
 def cmd_peak(a):
     x, sr = load(a.wav)
     s, e = active(x)
+    if e <= s:
+        print(json.dumps({"peak_dbfs": None, "silence": True}))
+        return
     s += int(0.3 * sr)
     seg = np.max(np.abs(x[s:e]), axis=1)
     win = int(0.05 * sr)

@@ -1,0 +1,45 @@
+    # Spike F: stereo -> two virtual speakers at +/-30 degrees with the builtin sofa spatializer, smart filter.
+    # SOFA azimuth runs counter-clockwise from the front, so the left speaker is 30 and the right one 330.
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp spike spatial"
+        media.name       = "omadsp spike spatial"
+        filter.graph = {
+          nodes = [
+            { type = sofa label = spatializer name = spL
+              config = { filename = "@SOFA@" }
+              control = { "Azimuth" = 30.0 "Elevation" = 0.0 "Radius" = 1.2 } }
+            { type = sofa label = spatializer name = spR
+              config = { filename = "@SOFA@" }
+              control = { "Azimuth" = 330.0 "Elevation" = 0.0 "Radius" = 1.2 } }
+            { type = builtin label = mixer name = mixL }
+            { type = builtin label = mixer name = mixR }
+          ]
+          links = [
+            { output = "spL:Out L" input = "mixL:In 1" }
+            { output = "spR:Out L" input = "mixL:In 2" }
+            { output = "spL:Out R" input = "mixR:In 1" }
+            { output = "spR:Out R" input = "mixR:In 2" }
+          ]
+          inputs  = [ "spL:In" "spR:In" ]
+          outputs = [ "mixL:Out" "mixR:Out" ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_spike_eq"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-spike"
+          state.restore-props = false
+          state.restore-target = false
+          filter.smart.target = { node.name = "omadsp_spike_out" }
+        }
+        playback.props = {
+          node.name    = "omadsp_spike_eq_out"
+          node.passive = true
+          state.restore-props = false
+          state.restore-target = false
+        }
+      }
+    }
