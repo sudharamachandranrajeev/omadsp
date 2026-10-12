@@ -5,9 +5,11 @@
 //! - [`dsp_math`]: RBJ biquads, the combined response curve and auto headroom.
 //! - [`controls`]: preset → filter-chain control values, and diffs.
 //! - [`graph`]: the filter host's config (golden-file tested).
+//! - [`managed_file`]: atomic writes that refuse symlinks and files omadsp didn't create.
 
 pub mod controls;
 pub mod dsp_math;
 pub mod graph;
+pub mod managed_file;
 pub mod model;
 pub mod protocol;
