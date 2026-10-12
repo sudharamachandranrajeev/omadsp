@@ -1,0 +1,47 @@
+    # Phase 1 step 2 test chain: the planned fixed topology (pre x16 → eq x32 → limiter) as a
+    # smart filter on the private test sink. eq band 0 is a 1 kHz bell at 0 dB, so eq:gl_0 is audible.
+    { name = libpipewire-module-filter-chain
+      args = {
+        node.description = "omadsp test"
+        media.name       = "omadsp test"
+        filter.graph = {
+          nodes = [
+            { type = lv2 name = pre plugin = "http://lsp-plug.in/plugins/lv2/para_equalizer_x16_lr"
+              control = { "mode" = 0 "ife_l" = 0 "ofe_l" = 0 "rfe_l" = 0 "ife_r" = 0 "ofe_r" = 0 "rfe_r" = 0 } }
+            { type = lv2 name = eq plugin = "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr"
+              control = {
+                "mode" = 0 "ife_l" = 0 "ofe_l" = 0 "rfe_l" = 0 "ife_r" = 0 "ofe_r" = 0 "rfe_r" = 0
+                "ftl_0" = 1 "fml_0" = 6 "fl_0" = 1000.0 "ql_0" = 1.414 "gl_0" = 1.0
+                "ftr_0" = 1 "fmr_0" = 6 "fr_0" = 1000.0 "qr_0" = 1.414 "gr_0" = 1.0
+              } }
+            { type = lv2 name = lim plugin = "http://lsp-plug.in/plugins/lv2/limiter_stereo"
+              control = { "alr" = 0 "boost" = 0 "th" = 0.891251 "ovs" = 0 "lk" = 5.0 } }
+          ]
+          links = [
+            { output = "pre:out_l" input = "eq:in_l" }
+            { output = "pre:out_r" input = "eq:in_r" }
+            { output = "eq:out_l" input = "lim:in_l" }
+            { output = "eq:out_r" input = "lim:in_r" }
+          ]
+          inputs  = [ "pre:in_l" "pre:in_r" ]
+          outputs = [ "lim:out_l" "lim:out_r" ]
+        }
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        capture.props = {
+          node.name          = "omadsp_test"
+          media.class        = Audio/Sink
+          filter.smart       = true
+          filter.smart.name  = "omadsp-test"
+          filter.smart.target = { node.name = "omadsp_spike_out" }
+          state.restore-props = false
+          state.restore-target = false
+        }
+        playback.props = {
+          node.name    = "omadsp_test_out"
+          node.passive = true
+          state.restore-props = false
+          state.restore-target = false
+        }
+      }
+    }

@@ -56,6 +56,10 @@ def cmd_level(a):
     if a.start is not None:
         s = int(a.start * sr)
     ln = int((a.len or 1.0) * sr)
+    if a.tail is not None:
+        # the last `tail` seconds of the active span, 0.1 s clear of its end
+        s, ln = max(s, e - int((a.tail + 0.1) * sr)), int(a.tail * sr)
+        a.start = s / sr
     # steady part: skip 0.3 s after onset
     s = s + int(0.3 * sr) if a.start is None else s
     seg = x[s : s + ln]
@@ -228,7 +232,7 @@ def cmd_peak(a):
 ap = argparse.ArgumentParser()
 sp = ap.add_subparsers(dest="cmd", required=True)
 p = sp.add_parser("level"); p.add_argument("wav"); p.add_argument("--freq", type=float, action="append", required=True)
-p.add_argument("--start", type=float); p.add_argument("--len", type=float)
+p.add_argument("--start", type=float); p.add_argument("--len", type=float); p.add_argument("--tail", type=float)
 p = sp.add_parser("rms"); p.add_argument("wav")
 p = sp.add_parser("null"); p.add_argument("a"); p.add_argument("b")
 p = sp.add_parser("response"); p.add_argument("ref"); p.add_argument("rec"); p.add_argument("--json"); p.add_argument("--expect"); p.add_argument("--quiet", action="store_true")
