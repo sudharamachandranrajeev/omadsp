@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root { --bg:#14161c; --card:#1d2029; --line:#3a4050; --ink:#e8eaf0; --mut:#9aa3b5; --acc:#7aa2f7; --acc2:#9ece6a; --warn:#e0af68; --pink:#bb9af7; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:'Inter','Noto Sans',system-ui,sans-serif; }
+  .wrap { width:1600px; padding:48px 56px 56px; }
+  h1 { margin:0 0 4px; font-size:30px; letter-spacing:-.01em; }
+  .sub { color:var(--mut); font-size:16px; margin-bottom:34px; }
+  .row { display:flex; align-items:stretch; gap:0; }
+  .box { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .box h3 { margin:0 0 6px; font-size:16px; }
+  .box p { margin:0; color:var(--mut); font-size:13.5px; line-height:1.45; }
+  .stage .mono { font-size:12.5px; }
+  .nw { white-space:nowrap; }
+  .mono { font-family:'JetBrains Mono','DejaVu Sans Mono',monospace; font-size:13px; color:var(--acc); }
+  .arrow { width:36px; display:flex; align-items:center; justify-content:center; color:var(--mut); font-size:26px; }
+  .host { flex:3.6; border:1.5px dashed var(--acc); border-radius:18px; padding:30px 14px 14px; position:relative; display:flex; gap:0; }
+  .host .tag { position:absolute; top:-12px; left:16px; background:var(--bg); padding:0 8px; color:var(--acc); font-size:13px; font-weight:600; }
+  .stage { flex:1; min-width:0; border-top:3px solid var(--acc); }
+  .stage.lim { border-top-color:var(--warn); }
+  .node { flex:1; min-width:0; border-top:3px solid var(--acc2); }
+  .end { flex:.85; min-width:0; border-top:3px solid var(--mut); }
+  .daemon { margin-top:30px; border:1.5px solid var(--pink); border-radius:18px; padding:18px 20px; display:grid; grid-template-columns:repeat(6,1fr); gap:12px; position:relative; }
+  .daemon .tag { position:absolute; top:-12px; left:16px; background:var(--bg); padding:0 8px; color:var(--pink); font-size:13px; font-weight:600; }
+  .daemon .box { padding:12px 14px; }
+  .ctl { display:flex; gap:20px; margin-top:22px; align-items:center; }
+  .ctl .box { flex:1; }
+  .chip { display:inline-block; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px; margin-left:6px; vertical-align:2px; }
+  .planned { background:#3a3220; color:var(--warn); }
+  .wip { background:#203a2a; color:var(--acc2); }
+  .links { color:var(--mut); font-size:13px; margin-top:14px; display:flex; gap:30px; }
+  .links b { color:var(--ink); font-weight:600; }
+  .vlink { text-align:center; color:var(--mut); font-size:13px; margin-top:12px; }
+</style></head><body><div class="wrap">
+  <h1>omadsp architecture</h1>
+  <div class="sub">Design from the Phase 0 findings (ADR-1 to ADR-11). The signal path runs left to right; the daemon controls it from below.</div>
+
+  <div class="row">
+    <div class="box end"><h3>Apps</h3><p>Browsers, players, games: anything playing to the default device</p></div>
+    <div class="arrow">→</div>
+    <div class="box node"><h3>Capture node</h3><p><span class="mono">omadsp</span><br>WirePlumber smart filter, Audio/Sink, no target: follows the default device. Preamp = ramped volume</p></div>
+    <div class="arrow">→</div>
+    <div class="host"><span class="tag">child process: pipewire -c host.conf (filter-chain), supervised by omadspd</span>
+      <div class="box stage"><h3>pre</h3><p>LSP <span class="mono">para_equalizer_<wbr>x16_lr</span><br>device correction (AutoEq) + bass / treble shelves</p></div>
+      <div class="arrow">→</div>
+      <div class="box stage"><h3>eq</h3><p>LSP <span class="mono">para_equalizer_<wbr>x32_lr</span><br>graphic or parametric EQ, up to 32 bands, click-free drags</p></div>
+      <div class="arrow">→</div>
+      <div class="box stage lim"><h3>lim</h3><p>LSP <span class="mono">limiter_stereo</span><br>always last, true peak, −1 dBTP ceiling</p></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="box node"><h3>Playback node</h3><p><span class="mono">omadsp_out</span><br>ramped volume for dips, A/B and on/off without reloads</p></div>
+    <div class="arrow">→</div>
+    <div class="box end"><h3>Device</h3><p>Speakers, USB DAC, Bluetooth. Its own volume applies after the DSP</p></div>
+  </div>
+
+  <div class="vlink">▲ set_param (≤ 1 per node per 16 ms) &nbsp;·&nbsp; filters metadata (DSP off = smart filter disabled) &nbsp;·&nbsp; supervise host &nbsp;·&nbsp; passive tap on <span class="mono">omadsp_out</span> for the overload LED</div>
+
+  <div class="daemon"><span class="tag">omadspd: Rust daemon, systemd --user <span class="chip wip">Phase 1 in progress</span></span>
+    <div class="box"><h3>model</h3><p>presets, device profiles, state; single source of truth</p></div>
+    <div class="box"><h3>graph</h3><p>pure fn(preset) → host.conf; fixed topology, golden-file tests</p></div>
+    <div class="box"><h3>dsp_math</h3><p>RBJ biquads, combined response curve, auto-headroom</p></div>
+    <div class="box"><h3>pw</h3><p>PipeWire client: registry, default sink, params, links</p></div>
+    <div class="box"><h3>host</h3><p>writes the conf, spawns and watches the filter host</p></div>
+    <div class="box"><h3>ipc</h3><p>NDJSON v1 over <span class="mono">$XDG_RUNTIME_DIR/omadsp/omadsp.sock</span></p></div>
+  </div>
+
+  <div class="ctl">
+    <div class="box"><h3>Omarchy bar plugin <span class="chip planned">Phase 2, planned</span></h3><p>QML bar widget + panel: EQ curve with draggable nodes, presets, A/B, overload LED. A thin view over IPC</p></div>
+    <div class="box"><h3><span class="mono" style="font-size:15px">omadsp</span> CLI <span class="chip planned">planned</span></h3><p>toggle, on/off, A/B, preset, band, preamp, tone, limiter, <span class="mono nw">status --json</span>, for keybinds and scripts</p></div>
+    <div class="box"><h3>Later phases</h3><p>AutoEq library and per-device suggestions, stereo tools, crossfeed, virtual speakers (HRTF), reverb, output controls</p></div>
+  </div>
+</div></body></html>
