@@ -136,8 +136,9 @@ impl HostProcess {
         self.child.try_wait().ok().flatten()
     }
 
-    /// SIGTERM, then SIGKILL after `grace`. Always reaps.
-    pub fn terminate(mut self, grace: Duration) -> Option<ExitStatus> {
+    /// SIGTERM, then SIGKILL after `grace`. Always reaps. The pidfd stays open until `self` is
+    /// dropped, so a main-loop watch on it can be removed first.
+    pub fn terminate(&mut self, grace: Duration) -> Option<ExitStatus> {
         if let Some(s) = self.try_exit() {
             return Some(s);
         }

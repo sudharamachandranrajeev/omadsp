@@ -114,6 +114,93 @@ pub fn controls(p: &Preset) -> Controls {
     c
 }
 
+/// Splits a band control key (`"eq:gl_12"`) into (stage, side, index, parameter).
+fn band_key(key: &str) -> Option<(&str, char, usize, &str)> {
+    let (stage, port) = key.split_once(':')?;
+    let (head, index) = port.split_once('_')?;
+    let side = head.chars().last().filter(|c| matches!(c, 'l' | 'r'))?;
+    let param = &head[..head.len() - 1];
+    matches!(param, "ft" | "fm" | "f" | "q" | "g").then_some((stage, side, index.parse().ok()?, param))
+}
+
+/// Types with a gain, which are the identity at 0 dB.
+fn gain_type(ft: f32) -> bool {
+    [FilterKind::Peak, FilterKind::LowShelf, FilterKind::HighShelf].iter().any(|&k| ft == lsp_filter_type(k) as f32)
+}
+
+/// One step from `have` towards `want` that is safe while audio runs through the filter.
+#[derive(Debug, Default, PartialEq)]
+pub struct LiveStep {
+    pub now: Controls,
+    /// A band switched type or is on its way to: let the plugin settle (one quantum) before the
+    /// next step.
+    pub settle: bool,
+    /// A change only a dip can hide: a pass filter, notch or band-pass switching on, off or type.
+    pub structural: bool,
+}
+
+/// Measured in step 6: LSP smooths changes of gain, frequency and Q, but switches a band's type
+/// instantly, which is clean only at 0 dB (where Off, bell and shelves are all the identity; a
+/// −6 dB bell switched off: −15 dBc). So a band that changes type fades to 0 dB, switches, then
+/// fades to its new gain, one step per call. Gainless types have no 0 dB: `structural`.
+pub fn live_step(have: &Controls, want: &Controls) -> LiveStep {
+    let mut step = LiveStep::default();
+    let mut bands = std::collections::BTreeSet::new();
+    for (k, &v) in want {
+        if have.get(k) == Some(&v) {
+            continue;
+        }
+        match band_key(k) {
+            Some((stage, side, i, _)) => {
+                bands.insert((stage.to_string(), side, i));
+            }
+            None => {
+                step.now.insert(k.clone(), v);
+            }
+        }
+    }
+    for (stage, side, i) in bands {
+        let key = |p: &str| format!("{stage}:{p}{side}_{i}");
+        let copy = |step: &mut LiveStep, params: &[&str]| {
+            for p in params {
+                let k = key(p);
+                if let Some(&v) = want.get(&k)
+                    && have.get(&k) != Some(&v)
+                {
+                    step.now.insert(k, v);
+                }
+            }
+        };
+        let (kft, kg) = (key("ft"), key("g"));
+        let (hft, wft) = (have.get(&kft).copied(), want.get(&kft).copied());
+        if hft == wft {
+            copy(&mut step, &["fm", "f", "q", "g"]);
+            continue;
+        }
+        let off = LSP_OFF as f32;
+        let unity_capable = |ft: Option<f32>| ft.is_some_and(|t| t == off || gain_type(t));
+        let (Some(_), Some(wft)) = (hft.filter(|_| unity_capable(hft)), wft.filter(|_| unity_capable(wft))) else {
+            step.structural = true;
+            continue;
+        };
+        step.settle = true;
+        let at_unity = hft == Some(off) || have.get(&kg) == Some(&1.0);
+        if !at_unity {
+            step.now.insert(kg, 1.0);
+            continue;
+        }
+        step.now.insert(kft, wft);
+        copy(&mut step, &["fm", "f", "q"]);
+        if wft == off {
+            // Off ignores the gain: stage the stored value now.
+            copy(&mut step, &["g"]);
+        } else if have.get(&kg) != Some(&1.0) {
+            step.now.insert(kg, 1.0);
+        }
+    }
+    step
+}
+
 /// Entries of `new` that differ from `old` (or are missing there).
 pub fn diff(old: &Controls, new: &Controls) -> Controls {
     new.iter().filter(|(k, v)| old.get(*k) != Some(v)).map(|(k, v)| (k.clone(), *v)).collect()
@@ -188,6 +275,89 @@ mod tests {
         let keys: Vec<_> = d.keys().map(String::as_str).collect();
         assert_eq!(keys, ["eq:ftl_4", "eq:ftr_4", "eq:gl_4", "eq:gr_4"]);
         assert!(diff(&a, &a).is_empty());
+    }
+
+    /// Applies steps until `want` is reached; returns each step's keys.
+    fn walk(mut have: Controls, want: &Controls) -> Vec<Vec<(String, f32)>> {
+        let mut steps = Vec::new();
+        while have != *want {
+            let s = live_step(&have, want);
+            assert!(!s.structural && !s.now.is_empty(), "stuck: {s:?}");
+            steps.push(s.now.iter().map(|(k, v)| (k.clone(), *v)).collect());
+            have.extend(s.now);
+            assert!(steps.len() < 5);
+        }
+        steps
+    }
+
+    fn only_left(steps: Vec<Vec<(String, f32)>>) -> Vec<Vec<(String, f32)>> {
+        steps.into_iter().map(|s| s.into_iter().filter(|(k, _)| k.contains("l_")).collect()).collect()
+    }
+
+    #[test]
+    fn live_steps_switch_types_only_at_unity() {
+        let mut p = Preset::default();
+        let flat = controls(&p);
+        // Gain change on an active band: one step.
+        p.eq.gains[5] = 6.0;
+        let six = controls(&p);
+        p.eq.gains[5] = 3.0;
+        let three = controls(&p);
+        assert_eq!(walk(six.clone(), &three).len(), 1);
+        assert!(!live_step(&six, &three).settle);
+        // Off -> bell at +6: switch at 0 dB, then the gain.
+        let g6 = db_to_lin(6.0) as f32;
+        assert_eq!(
+            only_left(walk(flat.clone(), &six)),
+            [vec![("eq:ftl_5".to_string(), 1.0)], vec![("eq:gl_5".to_string(), g6)]]
+        );
+        // Bell at +6 -> flat: fade to 0 dB, then Off.
+        assert_eq!(
+            only_left(walk(six.clone(), &flat)),
+            [vec![("eq:gl_5".to_string(), 1.0)], vec![("eq:ftl_5".to_string(), 0.0)]]
+        );
+        // Bell -> low shelf through unity.
+        let mut q = Preset::default();
+        q.eq.mode = EqMode::Parametric;
+        q.parametric = vec![ParamBand { kind: FilterKind::Peak, g: -4.0, ..ParamBand::default() }];
+        let bell = controls(&q);
+        q.parametric[0].kind = FilterKind::LowShelf;
+        let shelf = controls(&q);
+        assert_eq!(walk(bell, &shelf).len(), 3);
+        // Switching a disabled band back on restores its stored gain after the switch.
+        q.parametric[0].on = false;
+        let off = controls(&q);
+        q.parametric[0].on = true;
+        let steps = only_left(walk(off, &shelf));
+        assert_eq!(steps[0], [("eq:ftl_0".to_string(), 5.0), ("eq:gl_0".to_string(), 1.0)]);
+        // Limiter and other non-band keys go straight through.
+        p.limiter.ceiling_dbtp = -3.0;
+        let s = live_step(&three, &controls(&p));
+        assert_eq!(s.now.keys().collect::<Vec<_>>(), ["lim:th"]);
+    }
+
+    #[test]
+    fn gainless_type_changes_need_a_dip() {
+        let mut q = Preset::default();
+        q.eq.mode = EqMode::Parametric;
+        q.parametric = vec![ParamBand { kind: FilterKind::HighPass, f: 80.0, ..ParamBand::default() }];
+        let hp = controls(&q);
+        q.parametric[0].on = false;
+        let off = controls(&q);
+        assert!(live_step(&off, &hp).structural);
+        assert!(live_step(&hp, &off).structural);
+        q.parametric[0].on = true;
+        q.parametric[0].f = 100.0;
+        assert!(!live_step(&hp, &controls(&q)).structural, "moving an active high-pass is live");
+    }
+
+    #[test]
+    fn band_keys_parse() {
+        assert_eq!(band_key("eq:gl_12"), Some(("eq", 'l', 12, "g")));
+        assert_eq!(band_key("pre:ftr_15"), Some(("pre", 'r', 15, "ft")));
+        assert_eq!(band_key("eq:fml_0"), Some(("eq", 'l', 0, "fm")));
+        assert_eq!(band_key("lim:th"), None);
+        assert_eq!(band_key("eq:enabled"), None);
     }
 
     #[test]

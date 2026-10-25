@@ -19,9 +19,6 @@ pub struct Ramp {
     pub step_samples: i32,
 }
 
-/// The ramp used for dips and gain changes: 15 ms in 4-sample steps (Spike A §4: −71.6 dB residual).
-pub const RAMP: Ramp = Ramp { time_ms: 15, step_samples: 4 };
-
 /// Serializes a `Props` object (for `Node::set_param(ParamType::Props, …)`).
 pub fn props_pod(properties: Vec<Property>) -> Vec<u8> {
     let obj = Value::Object(Object {
@@ -133,27 +130,56 @@ impl Globals {
             })
             .collect()
     }
+    /// Links out of `node`, as (output port, input node, input port).
+    pub fn links_from(&self, node: u32) -> Vec<(u32, u32, u32)> {
+        self.all
+            .values()
+            .filter(|g| g.kind == ObjectType::Link && g.get_u32("link.output.node") == Some(node))
+            .filter_map(|g| {
+                Some((g.get_u32("link.output.port")?, g.get_u32("link.input.node")?, g.get_u32("link.input.port")?))
+            })
+            .collect()
+    }
+    /// The process id of the client that created `node`.
+    pub fn client_pid(&self, node: u32) -> Option<u32> {
+        let client = self.all.get(&node)?.get_u32("client.id")?;
+        let c = self.all.get(&client).filter(|c| c.kind == ObjectType::Client)?;
+        c.get_u32("pipewire.sec.pid").or_else(|| c.get_u32("application.process.id"))
+    }
     pub fn name_of(&self, id: u32) -> String {
         self.all.get(&id).and_then(|g| g.get("node.name")).unwrap_or("?").to_string()
     }
 }
 
-/// Registers a listener that mirrors the registry into `globals`. Keep the listener alive.
-pub fn mirror_registry(registry: &pw::registry::Registry, globals: Rc<RefCell<Globals>>) -> pw::registry::Listener {
+/// Registers a listener that mirrors the registry into `globals` and calls `changed` after each
+/// update (with `globals` no longer borrowed). Keep the listener alive.
+pub fn mirror_registry(
+    registry: &pw::registry::Registry,
+    globals: Rc<RefCell<Globals>>,
+    changed: impl Fn() + 'static,
+) -> pw::registry::Listener {
     let g_add = globals.clone();
+    let changed = Rc::new(changed);
+    let changed_add = changed.clone();
     registry
         .add_listener_local()
         .global(move |g| {
             let props =
                 g.props.map(|d| d.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default();
-            let mut gl = g_add.borrow_mut();
-            gl.all.insert(g.id, Global { id: g.id, kind: g.type_.clone(), props });
-            gl.raw.insert(g.id, g.to_owned());
+            {
+                let mut gl = g_add.borrow_mut();
+                gl.all.insert(g.id, Global { id: g.id, kind: g.type_.clone(), props });
+                gl.raw.insert(g.id, g.to_owned());
+            }
+            changed_add();
         })
         .global_remove(move |id| {
-            let mut gl = globals.borrow_mut();
-            gl.all.remove(&id);
-            gl.raw.remove(&id);
+            {
+                let mut gl = globals.borrow_mut();
+                gl.all.remove(&id);
+                gl.raw.remove(&id);
+            }
+            changed();
         })
         .register()
 }
@@ -174,7 +200,7 @@ mod tests {
         assert_eq!(s[0], Value::String("eq:gl_0".into()));
         assert_eq!(s[3], Value::Float(0.89));
 
-        let bytes = props_pod(volume_props(0.5, Some(RAMP)));
+        let bytes = props_pod(volume_props(0.5, Some(Ramp { time_ms: 30, step_samples: 1 })));
         let (_, Value::Object(o)) = PodDeserializer::deserialize_any_from(&bytes).unwrap() else { panic!() };
         let keys: Vec<u32> = o.properties.iter().map(|p| p.key).collect();
         assert_eq!(

@@ -3,3 +3,4 @@ spikes/.venv/
 *.wav
 *.sofa
 /target/
+__pycache__/

@@ -37,7 +37,7 @@ impl App {
         let core = context.connect_rc(None)?;
         let registry = core.get_registry_rc()?;
         let globals = Rc::new(RefCell::new(Globals::default()));
-        let listener = opw::mirror_registry(&registry, globals.clone());
+        let listener = opw::mirror_registry(&registry, globals.clone(), || {});
         let app = App { mainloop, core, registry, globals, _listener: listener };
         app.roundtrip();
         Ok(app)
