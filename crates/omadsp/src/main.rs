@@ -101,6 +101,14 @@ enum Cmd {
     },
     /// Print every event the daemon sends, one JSON object per line
     Watch,
+    /// Show post-DSP peaks (~20 per second) and the overload LED; --led shows only LED changes
+    Meter {
+        #[arg(long)]
+        led: bool,
+        /// One JSON object per event
+        #[arg(long)]
+        json: bool,
+    },
     /// Send a raw request: TYPE and an optional JSON payload
     Raw { kind: String, payload: Option<String> },
 }
@@ -472,6 +480,31 @@ fn run(cli: Cli) -> Result<()> {
             c.tx.set_read_timeout(None)?;
             while let Some(line) = c.line()? {
                 print!("{line}");
+                std::io::stdout().flush()?;
+            }
+            return Ok(());
+        }
+        Cmd::Meter { led, json } => {
+            c.call("meter.subscribe", json!({"level": if led { "led" } else { "full" }}))?;
+            c.tx.set_read_timeout(None)?;
+            while let Some(line) = c.line()? {
+                let Ok(ServerMessage::Event(e)) = serde_json::from_str::<ServerMessage>(&line) else { continue };
+                if e.event != protocol::event::METER && e.event != protocol::event::OVERLOAD {
+                    continue;
+                }
+                if json {
+                    print!("{line}");
+                } else if e.event == protocol::event::OVERLOAD {
+                    println!("overload {}", if e.payload["on"] == json!(true) { "ON" } else { "off" });
+                } else {
+                    let p = &e.payload["peak_db"];
+                    let lit = if e.payload["overload"] == json!(true) { "  ● OVERLOAD" } else { "" };
+                    println!(
+                        "L {:>6.1}  R {:>6.1} dBFS{lit}",
+                        p[0].as_f64().unwrap_or(f64::NAN),
+                        p[1].as_f64().unwrap_or(f64::NAN)
+                    );
+                }
                 std::io::stdout().flush()?;
             }
             return Ok(());

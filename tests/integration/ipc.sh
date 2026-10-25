@@ -178,7 +178,54 @@ print(f"RESULT 300 responses in {time.time() - t:.2f}s")
 PY
 [[ $? == 0 ]] && ok "burst answered" || bad "burst"
 
-echo "== 7. persistence and restart"
+echo "== 7. meter tap and overload LED"
+has_tap() { [[ -n "$(node_id omadsp_test_meter)" ]]; }
+has_tap && bad "tap exists before anyone subscribes" || ok "no tap while nobody subscribes"
+"$C" preset Flat
+"$C" preamp 0 --manual
+"$C" status >"$OUT/meter-status.txt"
+"$C" meter --json >"$OUT/meter-full.out" &
+WPID=$!
+"$C" meter --led --json >"$OUT/meter-led.out" &
+LPID=$!
+sleep 1.5
+has_tap && ok "tap created on subscribe" || bad "no tap node"
+python3 -I - "$OUT/meter-full.out" -20 false <<'PY'
+import json, sys
+m = [json.loads(l)["payload"] for l in open(sys.argv[1]) if '"meter"' in l]
+want, hot = float(sys.argv[2]), sys.argv[3] == "true"
+tail = m[-10:]
+print(f"RESULT {len(m)} meter events, last peaks {tail[-1]['peak_db'] if tail else None}")
+assert len(m) >= 15, "expected ~20 Hz"
+assert all(abs(p - want) <= 0.5 for e in tail for p in e["peak_db"]), tail
+assert all(e["overload"] == hot for e in tail)
+PY
+[[ $? == 0 ]] && ok "meter at -20 dBFS, LED off" || bad "cold meter readings (sink now: $(level_now meter-sink) dBFS)"
+SKIP=$(wc -l <"$OUT/meter-full.out")
+"$C" band 6 15
+"$C" preamp 12
+sleep 1.5
+python3 -I - "$OUT/meter-full.out" "$SKIP" <<'PY'
+import json, sys
+m = [json.loads(l)["payload"] for l in open(sys.argv[1]).readlines()[int(sys.argv[2]):] if '"meter"' in l]
+tail = m[-10:]
+print(f"RESULT hot: last peaks {tail[-1]['peak_db'] if tail else None}")
+assert tail and all(max(e["peak_db"]) <= -0.9 and max(e["peak_db"]) >= -1.5 for e in tail), tail
+assert all(e["overload"] for e in tail)
+PY
+[[ $? == 0 ]] && ok "+7 dB into the limiter: peaks at the -1 dBTP ceiling, LED on" || bad "hot meter readings"
+expect "snapshot shows overload" "s['overload']"
+"$C" preset Flat
+sleep 1
+grep -q '"on":true' "$OUT/meter-led.out" && grep -q '"on":false' "$OUT/meter-led.out" && ok "led subscriber got overload on and off" \
+  || bad "overload events: $(cat "$OUT/meter-led.out")"
+grep -q '"event":"meter"' "$OUT/meter-led.out" && bad "led subscriber got meter events" || ok "led subscriber gets no meter events"
+kill "$WPID" "$LPID"; WPID=""
+sleep 0.5
+has_tap && bad "tap still there after unsubscribing" || ok "tap removed when the last subscriber left"
+expect "overload off without a tap" "not s['overload']"
+
+echo "== 8. persistence and restart"
 "$C" band 3 -4.5
 "$C" tone --bass 3 --treble -2
 sleep 1.5

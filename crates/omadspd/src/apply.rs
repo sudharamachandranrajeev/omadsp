@@ -9,8 +9,10 @@
 //!   A band that changes type does so at 0 dB, in steps one quantum apart
 //!   ([`controls::live_step`]); a pass filter or notch switching on or off waits for a dip.
 //! - Volumes ramp in audioconvert. A ramp that arrives while another one is still running is
-//!   dropped, so each volume line sends at most one ramp per busy window (ramp + margin) and sends
-//!   its latest target when the window ends. Audioconvert keeps an unfinished ramp across a suspend,
+//!   dropped, and the old ramp then ends on its own value. A ramp advances only with processed
+//!   audio, one whole cycle at a time, and starts on the cycle after it arrives. So each volume line
+//!   sends at most one ramp per busy window (the ramp rounded up to whole cycles, plus a margin of
+//!   one cycle and IPC time) and sends its latest target when the window ends. Audioconvert keeps an unfinished ramp across a suspend,
 //!   so when the filter starts running again both lines wait one window and re-send their targets.
 //! - While the filter isn't running, nothing can be heard: values are set directly, without ramps or
 //!   dips.
@@ -56,7 +58,10 @@ pub struct Timing {
     pub gain_min_ms: i32,
     pub gain_ms_per_db: f32,
     pub gain_max_ms: i32,
-    /// Added to the ramp time before the same line ramps again: covers IPC and one quantum.
+    /// The longest cycle: ramps run in whole cycles of it.
+    pub quantum: Duration,
+    /// Added to a ramp's cycles before the same line ramps again: covers IPC and the cycle a ramp
+    /// waits before it starts.
     pub margin: Duration,
     pub params_interval: Duration,
     /// How long "DSP on" waits for streams to be linked into the filter before ramping up anyway.
@@ -72,6 +77,7 @@ impl Timing {
             gain_min_ms: 15,
             gain_ms_per_db: 5.0,
             gain_max_ms: 60,
+            quantum,
             margin: (quantum + Duration::from_millis(15)).min(Duration::from_millis(250)),
             params_interval: Duration::from_millis(16),
             link_timeout: Duration::from_millis(300),
@@ -92,7 +98,9 @@ impl Timing {
 
     /// How long a ramp keeps its line busy.
     pub fn busy(&self, r: Ramp) -> Duration {
-        Duration::from_millis(r.time_ms.max(0) as u64) + self.margin
+        let ramp = Duration::from_millis(r.time_ms.max(0) as u64);
+        let q = self.quantum.max(Duration::from_millis(1));
+        q * ramp.as_nanos().div_ceil(q.as_nanos()) as u32 + self.margin
     }
 
     /// Covers the longest ramp that might still be running.
@@ -460,6 +468,7 @@ mod tests {
             gain_min_ms: 15,
             gain_ms_per_db: 5.0,
             gain_max_ms: 60,
+            quantum: Duration::from_millis(1),
             margin: Duration::from_millis(50),
             params_interval: Duration::from_millis(16),
             link_timeout: Duration::from_millis(300),
@@ -770,7 +779,9 @@ mod tests {
     fn timing_follows_the_quantum() {
         let t = Timing::for_clock(48000, 2048);
         assert_eq!(t.margin.as_millis(), 57);
-        assert_eq!(t.busy(t.dip).as_millis(), 87);
+        // 30 ms is one 42.7 ms cycle.
+        assert_eq!(t.busy(t.dip).as_millis(), 100);
+        assert_eq!(t.busy(Ramp { time_ms: 58, step_samples: 1 }).as_millis(), 143);
         assert_eq!(Timing::for_clock(44100, 8192).margin.as_millis(), 200);
     }
 

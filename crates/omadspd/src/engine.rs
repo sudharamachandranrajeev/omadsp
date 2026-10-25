@@ -12,6 +12,8 @@
 //!   backoff, respawn. WirePlumber restart → rebind its metadata and switch the filter on again.
 //! - Picker guard (ADR-9): the filter never stays the configured default sink.
 //! - SIGTERM/SIGINT: switch the filter off inside a dip, clear our metadata key, stop the host, quit.
+//! - Metering (ADR-7): while a driver asks for it and the filter is up, a [`Tap`] hangs off the
+//!   playback node's outputs by passive links; its windows drive the overload LED.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -37,6 +39,7 @@ use omadsp_core::protocol::{DeviceInfo, Engine as EngineState};
 use crate::apply::{Action, Applier, Line, Target, Timing};
 use crate::device;
 use crate::host::{self, Decision, HostProcess, PidFd, RestartPolicy};
+use crate::meter::{self, Led, Tap};
 use crate::pw::{self as opw, Globals};
 
 /// The host must create its nodes within this time, or it counts as a crash.
@@ -79,6 +82,16 @@ pub struct Status {
     pub headroom_db: f64,
     /// Graph rate the curve and headroom are computed for.
     pub rate: u32,
+    /// The overload LED (always off while not metering).
+    pub overload: bool,
+}
+
+/// One meter window, for drivers that show levels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeterReading {
+    /// Post-chain sample peak per channel (dBFS).
+    pub peak_db: [f64; 2],
+    pub overload: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -123,10 +136,30 @@ impl Md {
 #[derive(Debug)]
 enum Ev {
     Graph,
-    Metadata { md: Md, subject: u32, key: Option<String>, kind: Option<String>, value: Option<String> },
-    NodeState { node: u32, state: NodeStatus },
-    CoreError { id: u32, res: i32, message: String },
+    Metadata {
+        md: Md,
+        subject: u32,
+        key: Option<String>,
+        kind: Option<String>,
+        value: Option<String>,
+    },
+    NodeState {
+        node: u32,
+        state: NodeStatus,
+    },
+    /// A filter node reported its Props: the host has applied a set.
+    Props {
+        node: u32,
+    },
+    CoreError {
+        id: u32,
+        res: i32,
+        message: String,
+    },
     HostExited,
+    MeterWindow {
+        peak: [f32; 2],
+    },
     ApplyTimer,
     HostTimer,
     ReconnectTimer,
@@ -164,7 +197,15 @@ struct FilterNodes {
     capture: pw::node::Node,
     playback: pw::node::Node,
     states: [NodeStatus; 2],
+    /// Nodes sent Props that haven't reported back yet, and since when. The host applies sets in
+    /// order but can fall far behind a steady stream of them (a 300-step drag queued ~650 ms), and
+    /// a ramp applied late overlaps the next one, which audioconvert then drops. So the applier
+    /// only acts again once the last sets have reached the host (or [`PROPS_CONFIRM_TIMEOUT`]).
+    unconfirmed: Option<(Instant, Vec<u32>)>,
 }
+
+/// How long to wait for a node to report a Props set before going on anyway.
+const PROPS_CONFIRM_TIMEOUT: Duration = Duration::from_millis(250);
 
 struct HostRun {
     _watch: IoSource<'static, PidFd>,
@@ -184,6 +225,14 @@ enum HostState {
     Failed,
 }
 
+/// The tap and its links. Field order = drop order: links before the stream.
+struct TapRun {
+    links: Vec<pw::link::Link>,
+    /// The playback node the links come from.
+    linked_to: Option<u32>,
+    tap: Tap,
+}
+
 struct Timers {
     apply: TimerSource<'static>,
     host: TimerSource<'static>,
@@ -201,10 +250,13 @@ fn arm(t: &TimerSource<'_>, after: Option<Duration>) {
 
 /// Called after every status change.
 pub type Observer = Box<dyn FnMut(&Status)>;
+/// Called for every meter window.
+pub type MeterObserver = Box<dyn FnMut(&MeterReading)>;
 
 pub struct Core {
     // Drop order matters: everything holding proxies goes before `conn`.
     graveyard: Vec<Box<dyn Any>>,
+    tap: Option<TapRun>,
     host: HostState,
     conn: Option<Conn>,
     timers: Timers,
@@ -230,6 +282,9 @@ pub struct Core {
     shutdown: Option<Instant>,
     status: Status,
     observer: Option<Observer>,
+    metering: bool,
+    led: Led,
+    meter_observer: Option<MeterObserver>,
 }
 
 struct Shared {
@@ -295,6 +350,7 @@ impl Engine {
             let rate = 48000;
             let mut core = Core {
                 graveyard: Vec::new(),
+                tap: None,
                 host: HostState::Down,
                 conn: None,
                 timers,
@@ -324,8 +380,12 @@ impl Engine {
                     preamp_db: 0.0,
                     headroom_db: 0.0,
                     rate,
+                    overload: false,
                 },
                 observer: None,
+                metering: false,
+                led: Led::default(),
+                meter_observer: None,
             };
             core.retarget(false);
             Shared { queue: RefCell::new(VecDeque::new()), core: RefCell::new(core) }
@@ -401,6 +461,19 @@ impl Core {
         self.begin_shutdown(Instant::now());
     }
 
+    /// Runs the post-chain tap (and so the overload LED) or stops it.
+    pub fn set_metering(&mut self, on: bool) {
+        if self.metering != on {
+            self.metering = on;
+            self.reconcile_tap();
+        }
+    }
+
+    /// Called for every meter window while metering. It must not call back into the engine.
+    pub fn set_meter_observer(&mut self, f: impl FnMut(&MeterReading) + 'static) {
+        self.meter_observer = Some(Box::new(f));
+    }
+
     /// How often the picker guard put the previous output back.
     pub fn picker_reverts(&self) -> u32 {
         self.picker_reverts
@@ -427,6 +500,16 @@ impl Core {
             Ev::Graph => self.on_graph(),
             Ev::Metadata { md, subject, key, kind, value } => self.on_metadata(md, subject, key, kind, value),
             Ev::NodeState { node, state } => self.on_node_state(now, node, state),
+            Ev::Props { node } => {
+                if let HostState::Up(_, n) = &mut self.host
+                    && let Some((_, waiting)) = &mut n.unconfirmed
+                {
+                    waiting.retain(|&id| id != node);
+                    if waiting.is_empty() {
+                        n.unconfirmed = None;
+                    }
+                }
+            }
             Ev::CoreError { id, res, message } => {
                 if id == pw::core::PW_ID_CORE && res == -libc::EPIPE {
                     self.lose_connection();
@@ -435,6 +518,16 @@ impl Core {
                 }
             }
             Ev::HostExited => self.on_host_exit(now),
+            Ev::MeterWindow { peak } => {
+                if self.tap.is_some() {
+                    let peak_db = peak.map(meter::lin_to_db);
+                    self.led.window(now, peak_db, self.desired.preset.limiter.ceiling_dbtp);
+                    let r = MeterReading { peak_db, overload: self.led.on(now) };
+                    if let Some(o) = &mut self.meter_observer {
+                        o(&r);
+                    }
+                }
+            }
             Ev::HostTimer => self.on_host_timer(now),
             Ev::ReconnectTimer => self.try_connect(),
             Ev::ApplyTimer => {}
@@ -446,10 +539,31 @@ impl Core {
     /// After a batch of events: perform what the applier wants, re-arm timers, publish the status.
     fn settle(&mut self) {
         let now = Instant::now();
-        if let HostState::Up(_, nodes) = &self.host {
-            let filters = self.conn.as_ref().and_then(|c| c.md(Md::Filters));
-            for a in self.applier.poll(now) {
-                perform(nodes, filters, a);
+        let mut confirm_by = None;
+        if let HostState::Up(_, nodes) = &mut self.host {
+            if let Some((since, _)) = nodes.unconfirmed
+                && now >= since + PROPS_CONFIRM_TIMEOUT
+            {
+                debug!("Props not confirmed after {PROPS_CONFIRM_TIMEOUT:?}; going on");
+                nodes.unconfirmed = None;
+            }
+            match nodes.unconfirmed {
+                Some((since, _)) => confirm_by = Some(since + PROPS_CONFIRM_TIMEOUT),
+                None => {
+                    let filters = self.conn.as_ref().and_then(|c| c.md(Md::Filters));
+                    let mut sent = Vec::new();
+                    for a in self.applier.poll(now) {
+                        if let Some(id) = perform(nodes, filters, a)
+                            && !sent.contains(&id)
+                        {
+                            sent.push(id);
+                        }
+                    }
+                    if !sent.is_empty() {
+                        nodes.unconfirmed = Some((now, sent));
+                        confirm_by = Some(now + PROPS_CONFIRM_TIMEOUT);
+                    }
+                }
             }
         }
         if let Some(deadline) = self.shutdown
@@ -457,7 +571,12 @@ impl Core {
         {
             self.finish_shutdown();
         }
-        let wake = [self.applier.next_wakeup(now), self.shutdown].into_iter().flatten().min();
+        // While sets are unconfirmed the applier waits for the confirmation (an event), not a time.
+        let apply_at = match confirm_by {
+            Some(t) => Some(t),
+            None => self.applier.next_wakeup(now),
+        };
+        let wake = [apply_at, self.shutdown, self.led.next_change(now)].into_iter().flatten().min();
         arm(&self.timers.apply, wake.map(|t| t.saturating_duration_since(now)));
 
         let st = self.compute_status();
@@ -497,6 +616,7 @@ impl Core {
             preamp_db: self.preamp.0,
             headroom_db: self.preamp.1,
             rate: self.rate,
+            overload: self.tap.is_some() && self.led.on(Instant::now()),
         }
     }
 
@@ -554,6 +674,9 @@ impl Core {
         // would stay: stop it, and start a fresh one after reconnecting.
         self.stop_host(false);
         self.host = HostState::Down;
+        if let Some(t) = self.tap.take() {
+            self.graveyard.push(Box::new(t));
+        }
         if let Some(c) = self.conn.take() {
             self.graveyard.push(Box::new(c));
         }
@@ -628,6 +751,68 @@ impl Core {
             _ => None,
         };
         self.device = device::active_device(&gl, playback, self.default_sink.as_deref());
+        drop(gl);
+        self.reconcile_tap();
+    }
+
+    /// Makes the tap match `metering` and the filter: created while wanted and up, linked to the
+    /// current playback node once its ports exist, dropped otherwise.
+    fn reconcile_tap(&mut self) {
+        let playback = match (&self.host, &self.conn) {
+            (HostState::Up(_, n), Some(_)) if self.metering && self.shutdown.is_none() => n.playback_id,
+            _ => {
+                if let Some(t) = self.tap.take() {
+                    debug!("meter tap stopped");
+                    self.graveyard.push(Box::new(t));
+                    self.led.reset();
+                }
+                return;
+            }
+        };
+        let conn = self.conn.as_ref().expect("connected");
+        if self.tap.is_none() {
+            let w = self.weak.clone();
+            let name = format!("{}_meter", self.opts.graph.name);
+            match Tap::new(&conn._core, &name, self.rate, move |peak| post(&w, Ev::MeterWindow { peak })) {
+                Ok(tap) => self.tap = Some(TapRun { links: Vec::new(), linked_to: None, tap }),
+                Err(e) => {
+                    warn!("can't create the meter tap: {e}");
+                    return;
+                }
+            }
+        }
+        let t = self.tap.as_mut().expect("just made");
+        if t.linked_to == Some(playback) {
+            return;
+        }
+        let gl = conn.globals.borrow();
+        let Some(tap_id) = gl.node_by_name(&t.tap.name).map(|g| g.id) else { return };
+        let (outs, ins) = (gl.ports(playback, "out"), gl.ports(tap_id, "in"));
+        let pairs: Vec<(u32, u32)> = ["FL", "FR"]
+            .iter()
+            .filter_map(|ch| {
+                let o = outs.iter().find(|(c, _)| c == ch)?.1;
+                let i = ins.iter().find(|(c, _)| c == ch)?.1;
+                Some((o, i))
+            })
+            .collect();
+        if pairs.len() < 2 {
+            return;
+        }
+        drop(gl);
+        let old = std::mem::take(&mut t.links);
+        for (o, i) in pairs {
+            match conn
+                ._core
+                .create_object::<pw::link::Link>("link-factory", &opw::link_props(playback, o, tap_id, i, true))
+            {
+                Ok(l) => t.links.push(l),
+                Err(e) => warn!("can't link the meter tap: {e}"),
+            }
+        }
+        t.linked_to = Some(playback);
+        debug!("meter tap {tap_id} linked to {playback}");
+        self.graveyard.push(Box::new(old));
     }
 
     /// Starting: bind the host's nodes once both exist. Up: notice if they vanish.
@@ -686,10 +871,18 @@ impl Core {
             (conn.registry.bind(&gl.raw[&capture_id])?, conn.registry.bind(&gl.raw[&playback_id])?)
         };
         let listen = |node: &pw::node::Node, id: u32| {
-            let w = self.weak.clone();
-            node.add_listener_local()
+            let (w, w2) = (self.weak.clone(), self.weak.clone());
+            let l = node
+                .add_listener_local()
                 .info(move |info| post(&w, Ev::NodeState { node: id, state: info.state().into() }))
-                .register()
+                .param(move |_seq, kind, _index, _next, _param| {
+                    if kind == pw::spa::param::ParamType::Props {
+                        post(&w2, Ev::Props { node: id });
+                    }
+                })
+                .register();
+            node.subscribe_params(&[pw::spa::param::ParamType::Props]);
+            l
         };
         let listeners = vec![listen(&capture, capture_id), listen(&playback, playback_id)];
         Ok(FilterNodes {
@@ -699,6 +892,7 @@ impl Core {
             capture,
             playback,
             states: [NodeStatus::Creating, NodeStatus::Creating],
+            unconfirmed: None,
         })
     }
 
@@ -717,6 +911,9 @@ impl Core {
                     _ => return,
                 }
                 self.applier.set_timing(Timing::for_clock(self.rate, self.max_quantum.max(self.force_quantum)));
+                if let Some(t) = &self.tap {
+                    t.tap.set_rate(self.rate);
+                }
                 self.retarget(false);
             }
             Md::Default if key == DEFAULT_SINK => {
@@ -822,6 +1019,7 @@ impl Core {
         }
         self.applier.detach();
         arm(&self.timers.host, None);
+        self.reconcile_tap();
     }
 
     fn on_host_exit(&mut self, now: Instant) {
@@ -897,19 +1095,22 @@ impl Core {
     }
 }
 
-fn perform(nodes: &FilterNodes, filters: Option<&BoundMd>, a: Action) {
+/// Returns the node that was sent Props, if any.
+fn perform(nodes: &FilterNodes, filters: Option<&BoundMd>, a: Action) -> Option<u32> {
     match a {
         Action::Params(p) => {
             debug!("params: {} values", p.len());
             opw::set_props(&nodes.capture, vec![opw::params_prop(p.iter().map(|(k, v)| (k.as_str(), *v)))]);
+            return Some(nodes.capture_id);
         }
         Action::Volume { line, volume, ramp } => {
             debug!("volume {line:?} → {volume:.4} ramp {ramp:?}");
-            let node = match line {
-                Line::Capture => &nodes.capture,
-                Line::Playback => &nodes.playback,
+            let (node, id) = match line {
+                Line::Capture => (&nodes.capture, nodes.capture_id),
+                Line::Playback => (&nodes.playback, nodes.playback_id),
             };
             opw::set_props(node, opw::volume_props(volume, ramp));
+            return Some(id);
         }
         Action::SmartDisabled(d) => match filters {
             Some(md) => {
@@ -924,4 +1125,5 @@ fn perform(nodes: &FilterNodes, filters: Option<&BoundMd>, a: Action) {
             None => warn!("no `filters` metadata (is WirePlumber running?): can't switch the filter"),
         },
     }
+    None
 }

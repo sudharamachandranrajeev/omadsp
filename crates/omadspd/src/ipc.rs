@@ -9,6 +9,8 @@
 //! - Borrow rule: the server is never borrowed while the engine runs (`Engine::with`), because the
 //!   engine's status observer publishes through it.
 //! - Closed clients are dropped from a timer, never from their own I/O callback.
+//! - Meter traffic (ADR-7): the engine's tap runs while any client subscribes at `led` or `full`.
+//!   `overload` goes to subscribers when the LED changes; `meter` (~20 Hz) only to `full` ones.
 
 use std::cell::RefCell;
 use std::io::{self, ErrorKind, Read, Write};
@@ -31,7 +33,7 @@ use omadsp_core::protocol::{
     self, Command, DeviceInfo, ErrorBody, ErrorCode, Event, MeterLevel, Request, Response, Snapshot, event,
 };
 
-use crate::engine::{Core, Desired, Engine, Status};
+use crate::engine::{Core, Desired, Engine, MeterReading, Status};
 use crate::session::Session;
 
 /// Longest request line.
@@ -111,6 +113,14 @@ fn arm(t: &TimerSource<'_>, after: Duration) {
     let _ = t.update_timer(Some(after.max(Duration::from_micros(1))), None);
 }
 
+fn level_rank(l: MeterLevel) -> u8 {
+    match l {
+        MeterLevel::Off => 0,
+        MeterLevel::Led => 1,
+        MeterLevel::Full => 2,
+    }
+}
+
 /// Makes the runtime directory (0700) and clears a stale socket. Fails if a daemon answers on it.
 fn prepare_socket(dir: &Path) -> Result<PathBuf> {
     std::fs::DirBuilder::new()
@@ -160,10 +170,11 @@ impl Server {
         let status = engine.with(|c| c.status().clone());
         let server = Rc::new_cyclic(|w: &Weak<RefCell<Server>>| {
             let tick = {
-                let w = w.clone();
+                let (w, eng) = (w.clone(), Rc::downgrade(engine));
                 ml.loop_().add_timer(move |_| {
-                    if let Some(s) = w.upgrade() {
+                    if let (Some(s), Some(e)) = (w.upgrade(), eng.upgrade()) {
                         s.borrow_mut().on_tick();
+                        Server::sync_metering(&s, &e);
                     }
                 })
             };
@@ -201,6 +212,7 @@ impl Server {
         server.borrow_mut()._listener = Some(src);
         {
             let w = Rc::downgrade(&server);
+            let wm = w.clone();
             engine.with(|c| {
                 c.set_observer(move |st| {
                     if let Some(s) = w.upgrade() {
@@ -208,7 +220,12 @@ impl Server {
                         s.status = st.clone();
                         s.publish();
                     }
-                })
+                });
+                c.set_meter_observer(move |r| {
+                    if let Some(s) = wm.upgrade() {
+                        s.borrow_mut().on_meter(r);
+                    }
+                });
             });
         }
         server.borrow_mut().publish();
@@ -333,10 +350,10 @@ impl Server {
                 Response::ok(id, Some(serde_json::to_value(snap).expect("serializes")))
             }
             Command::MeterSubscribe { level } => {
-                let mut s = rc.borrow_mut();
-                if let Some(c) = s.clients.iter_mut().find(|c| c.id == client) {
+                if let Some(c) = rc.borrow_mut().clients.iter_mut().find(|c| c.id == client) {
                     c.meter = level;
                 }
+                Server::sync_metering(rc, engine);
                 Response::ok(id, Some(json!({ "level": level })))
             }
             cmd => {
@@ -372,7 +389,7 @@ impl Server {
             device: self.status.device.clone(),
             preamp_db: (self.status.preamp_db * 100.0).round() / 100.0,
             headroom_db: (self.status.headroom_db * 100.0).round() / 100.0,
-            overload: false,
+            overload: self.status.overload,
         }
     }
 
@@ -388,6 +405,12 @@ impl Server {
     pub fn publish(&mut self) {
         let snap = self.snapshot();
         if self.sent.snapshot.as_ref() != Some(&snap) {
+            if self.sent.snapshot.as_ref().is_some_and(|o| o.overload != snap.overload) {
+                let line = protocol::to_line(&Event::new(event::OVERLOAD, json!({ "on": snap.overload })));
+                for c in self.clients.iter_mut().filter(|c| c.meter != MeterLevel::Off) {
+                    c.send(&line);
+                }
+            }
             let device = snap.device.clone();
             self.broadcast(event::STATE_CHANGED, serde_json::to_value(&snap).expect("serializes"));
             self.sent.snapshot = Some(snap);
@@ -441,7 +464,24 @@ impl Server {
 
     /// The meter level the most demanding client asked for.
     pub fn meter_level(&self) -> MeterLevel {
-        self.clients.iter().filter(|c| !c.closed).map(|c| c.meter).max_by_key(|l| *l as u8).unwrap_or_default()
+        self.clients.iter().filter(|c| !c.closed).map(|c| c.meter).max_by_key(|&l| level_rank(l)).unwrap_or_default()
+    }
+
+    /// Starts or stops the engine's tap to match the subscriptions. Call with the server unborrowed.
+    fn sync_metering(rc: &Rc<RefCell<Server>>, engine: &Rc<Engine>) {
+        let on = rc.borrow().meter_level() != MeterLevel::Off;
+        engine.with(|c| c.set_metering(on));
+    }
+
+    fn on_meter(&mut self, r: &MeterReading) {
+        let line = protocol::to_line(&Event::new(
+            event::METER,
+            json!({ "peak_db": r.peak_db.map(|p| (p * 10.0).round() / 10.0), "overload": r.overload }),
+        ));
+        for c in self.clients.iter_mut().filter(|c| c.meter == MeterLevel::Full) {
+            c.send(&line);
+        }
+        self.schedule_tick();
     }
 
     /// Saves the state and removes the socket. Call after the main loop returns.
