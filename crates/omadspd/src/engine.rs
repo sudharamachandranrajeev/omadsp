@@ -541,10 +541,10 @@ impl Core {
         let now = Instant::now();
         let mut confirm_by = None;
         if let HostState::Up(_, nodes) = &mut self.host {
-            if let Some((since, _)) = nodes.unconfirmed
-                && now >= since + PROPS_CONFIRM_TIMEOUT
+            if let Some((since, waiting)) = &nodes.unconfirmed
+                && now >= *since + PROPS_CONFIRM_TIMEOUT
             {
-                debug!("Props not confirmed after {PROPS_CONFIRM_TIMEOUT:?}; going on");
+                debug!("Props not confirmed after {PROPS_CONFIRM_TIMEOUT:?} by {waiting:?}; going on");
                 nodes.unconfirmed = None;
             }
             match nodes.unconfirmed {
