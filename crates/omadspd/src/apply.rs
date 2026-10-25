@@ -37,7 +37,11 @@ pub enum Line {
 pub enum Action {
     /// filter-chain control values, sent to the capture node.
     Params(Vec<(String, f32)>),
-    Volume { line: Line, volume: f32, ramp: Option<Ramp> },
+    Volume {
+        line: Line,
+        volume: f32,
+        ramp: Option<Ramp>,
+    },
     /// `filter.smart.disabled` in the `filters` metadata.
     SmartDisabled(bool),
 }
@@ -176,9 +180,13 @@ enum Phase {
     DipDown,
     /// The change is made; waiting until it has reached the audio (one margin) and the preamp has
     /// finished its ramp.
-    DipHold { until: Instant },
+    DipHold {
+        until: Instant,
+    },
     /// The smart filter was just switched on; waiting for streams to be linked into it.
-    Linking { deadline: Instant },
+    Linking {
+        deadline: Instant,
+    },
 }
 
 /// State that only exists while the filter's nodes exist.

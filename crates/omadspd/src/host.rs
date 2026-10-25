@@ -64,6 +64,22 @@ pub fn write_conf(path: &Path, preset: &Preset, opts: &Options) -> io::Result<()
 }
 
 /// A running host process.
+/// Blocks or unblocks SIGTERM and SIGINT for the calling thread (`how`: `SIG_BLOCK`/`SIG_UNBLOCK`).
+/// Async-signal-safe.
+pub fn set_term_signals(how: libc::c_int) -> io::Result<()> {
+    // SAFETY: a zeroed sigset_t is valid storage for sigemptyset.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        if libc::pthread_sigmask(how, &set, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::other("pthread_sigmask failed"));
+        }
+    }
+    Ok(())
+}
+
 pub struct HostProcess {
     child: Child,
     pidfd: OwnedFd,
@@ -94,9 +110,12 @@ impl HostProcess {
     pub fn spawn_cmd(mut cmd: Command) -> io::Result<HostProcess> {
         let parent = std::process::id() as libc::pid_t;
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit());
-        // SAFETY: only async-signal-safe calls (prctl, getppid) between fork and exec.
+        // SAFETY: only async-signal-safe calls (sigprocmask, prctl, getppid) between fork and exec.
         unsafe {
             cmd.pre_exec(move || {
+                // The engine blocks SIGTERM/SIGINT (they arrive through its loop); the host must not
+                // inherit that, or neither `terminate` nor PDEATHSIG could stop it gracefully.
+                set_term_signals(libc::SIG_UNBLOCK)?;
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0) != 0 {
                     return Err(io::Error::last_os_error());
                 }

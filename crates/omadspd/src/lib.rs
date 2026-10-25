@@ -4,4 +4,7 @@ pub mod apply;
 pub mod device;
 pub mod engine;
 pub mod host;
+pub mod ipc;
 pub mod pw;
+pub mod session;
+pub mod store;

@@ -266,7 +266,10 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Call before any other thread exists: SIGTERM/SIGINT get blocked here so that only the
+    /// loop's signal sources see them, and threads inherit the mask.
     pub fn new(opts: Options, desired: Desired) -> Result<Engine> {
+        host::set_term_signals(libc::SIG_BLOCK)?;
         pw::init();
         // One loop per process, alive for the process: sources can then be stored as `'static`.
         let ml: &'static MainLoopRc = Box::leak(Box::new(MainLoopRc::new(None)?));
@@ -640,7 +643,9 @@ impl Core {
                         gl.all
                             .values()
                             .find(|g| {
-                                g.kind == ObjectType::Node && g.get("node.name") == Some(n) && gl.client_pid(g.id) == Some(pid)
+                                g.kind == ObjectType::Node
+                                    && g.get("node.name") == Some(n)
+                                    && gl.client_pid(g.id) == Some(pid)
                             })
                             .map(|g| g.id)
                     };
@@ -768,7 +773,8 @@ impl Core {
     // ---- host ----
 
     fn spawn_host(&mut self) {
-        if self.conn.is_none() || self.shutdown.is_some() || !matches!(self.host, HostState::Down | HostState::Backoff) {
+        if self.conn.is_none() || self.shutdown.is_some() || !matches!(self.host, HostState::Down | HostState::Backoff)
+        {
             return;
         }
         let conf = self.opts.runtime_dir.join("host.conf");
@@ -908,7 +914,12 @@ fn perform(nodes: &FilterNodes, filters: Option<&BoundMd>, a: Action) {
         Action::SmartDisabled(d) => match filters {
             Some(md) => {
                 debug!("{SMART_DISABLED} = {d}");
-                md.proxy.set_property(nodes.capture_id, SMART_DISABLED, Some(JSON), Some(if d { "true" } else { "false" }));
+                md.proxy.set_property(
+                    nodes.capture_id,
+                    SMART_DISABLED,
+                    Some(JSON),
+                    Some(if d { "true" } else { "false" }),
+                );
             }
             None => warn!("no `filters` metadata (is WirePlumber running?): can't switch the filter"),
         },

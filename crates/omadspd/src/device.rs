@@ -86,10 +86,8 @@ mod tests {
 
     #[test]
     fn keys() {
-        let bt = node(
-            1,
-            &[("node.name", "bluez_output.D0_65_F3_86_70_0C.1"), ("api.bluez5.address", "D0:65:F3:86:70:0C")],
-        );
+        let bt =
+            node(1, &[("node.name", "bluez_output.D0_65_F3_86_70_0C.1"), ("api.bluez5.address", "D0:65:F3:86:70:0C")]);
         assert_eq!(device_key(&bt), "bt:D0:65:F3:86:70:0C");
         let alsa = node(2, &[("node.name", "alsa_output.pci-0000_00_1f.3.analog-stereo")]);
         assert_eq!(device_key(&alsa), "node:alsa_output.pci-0000_00_1f.3.analog-stereo");
