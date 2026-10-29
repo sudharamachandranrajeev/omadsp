@@ -28,7 +28,7 @@
 </p>
 
 omadsp is a system-wide sound equaliser for [Omarchy](https://omarchy.org), in the spirit of
-Poweramp on Android. It shapes the sound of every app at once, and you control it from a button
+the best Android music player equalisers. It shapes the sound of every app at once, and you control it from a button
 in the bar. It uses the sound system already on your computer (PipeWire), with no extra audio
 app. Status: **in development, not usable yet**. There is no app or user interface so far, so
 the picture above is a design diagram, not a screenshot.
@@ -154,7 +154,7 @@ cargo test                 # unit and golden-file tests
 * **ADR-3** LSP `para_equalizer` in APO mode, not builtin biquads (they click on every change); flat or unused bands are switched off.
 * **ADR-4** Fixed topology `omadsp` → `pre` (x16) → `eq` (x32) → `lim` → `omadsp_out`; dips, A/B and on/off without reloads (a reload costs ~0.1 s plus a click).
 * **ADR-5** LSP `limiter_stereo`, last, always on while the DSP is on (−1 dBTP default).
-* **ADR-6** No Poweramp-style DVC in v1: Omarchy's volume keys, OSD and slider always act on the device, after the DSP.
+* **ADR-6** No direct volume control (DVC) in v1: Omarchy's volume keys, OSD and slider always act on the device, after the DSP.
 * **ADR-7** Overload LED from a hand-linked passive capture on `omadsp_out`.
 * **ADR-8** Spatial via the SOFA spatializer with calibrated gain; the HeSuVi example is not shipped.
 * **ADR-9** Node names `omadsp` / `omadsp_out`; both opt out of WirePlumber state restore.
@@ -179,7 +179,7 @@ Measured in Phase 0: LSP EQ + limiter used 0.27–0.66 % of one core, with 5.0 m
 - [LSP Plugins](https://lsp-plug.in) (`para_equalizer`, `limiter_stereo`) via LV2
 - [pipewire-rs](https://gitlab.freedesktop.org/pipewire/pipewire-rs), [serde](https://serde.rs), [anyhow](https://github.com/dtolnay/anyhow)
 - [Omarchy](https://omarchy.org) and [Quickshell](https://quickshell.org) for the bar plugin
-- [AutoEq](https://github.com/jaakkopasanen/AutoEq) (planned headphone correction library) and [Poweramp](https://powerampapp.com) for the inspiration
+- [AutoEq](https://github.com/jaakkopasanen/AutoEq) (planned headphone correction library)
 
 </details>
 
