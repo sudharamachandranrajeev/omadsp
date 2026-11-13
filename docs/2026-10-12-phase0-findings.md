@@ -177,7 +177,7 @@ Each ADR: context → decision → consequences. "§" refers to the spike notes.
 
 ### ADR-11 — IPC, CLI and plugin: as PROMPT §8.2–8.4
 - No changes from PROMPT. One addition: the `meter` subscription also drives the tap (ADR-7).
-- **Plugin id still open** (needed in Phase 2): `rajeevrama.omadsp` (matches your other plugins) or
+- **Plugin id still open** (needed in Phase 2): `brahma.omadsp` (matches the other Brahma plugins) or
   `io.github.<user>.omadsp`.
 
 ## 4. Revised risks
